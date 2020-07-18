@@ -7,6 +7,8 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Drawing;
+using Color = System.Drawing.Color;
+using Microsoft.Win32;
 
 namespace SEImage2Blueprint
 {
@@ -66,8 +68,9 @@ namespace SEImage2Blueprint
             </MyObjectBuilder_CubeBlock>";
 
         private string size = "Large";
-        private string imageName = "";
-        private BitmapSource image;
+        private string imageName;
+        private FileInfo imagePath;
+        private BitmapSource bitMap;
         private bool running = false;
 
         public MainWindow()
@@ -108,87 +111,74 @@ namespace SEImage2Blueprint
             return list;
         }
 
-        private void UpdateImage()
+        private void UpdateImage(string name)
         {
-            string imagePath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop) + "/" + imageName + ".png";
-            if (File.Exists(imagePath) && ImageSize != null)
+            imageName = name;
+            if (imagePath != null && imagePath.Exists && ImageSize != null)
             {
-                double scale = (ImageSize.Value + 0.5);
+                double scale = ImageSize.Value;
 
-                BitmapImage image = new BitmapImage(new Uri(imagePath, UriKind.RelativeOrAbsolute));
+                BitmapImage image = new BitmapImage(new Uri(imagePath.FullName));
 
                 TransformedBitmap scaledImage = new TransformedBitmap(image, new ScaleTransform(scale, scale));
-
                 ImageImg.Source = scaledImage;
-                this.image = scaledImage;
+
+                scaledImage.Freeze();
+                bitMap = scaledImage;
                 
                 ImageSizeLbl.Content = scaledImage.PixelHeight.ToString() + "x" + scaledImage.PixelWidth.ToString();
-
             }
-
         }
 
         private void Convert()
         {
             running = true;
-            string imagePath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop) + "/" + imageName + ".png";
-            string blueprintPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) + "/SpaceEngineers/Blueprints/local/" + imageName;
-
+            string blueprintPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) + "/SpaceEngineers/Blueprints/local/" + Path.GetFileName(imageName);
             if (Directory.Exists(blueprintPath))
             {
-                Directory.Delete(blueprintPath, true);
+                InfoLbl.Dispatcher.Invoke(() => {
+                    InfoLbl.Content = "Blueprint already exists!";
+                });
+                running = false;
+                return;
             }
             Directory.CreateDirectory(blueprintPath);
-            File.Copy(imagePath, blueprintPath + "/thumb.png", overwrite: true);
+
+            File.Copy(imagePath.FullName, blueprintPath + "/thumb.png", overwrite: true);
+
             StreamWriter text = File.CreateText(blueprintPath + "/bp.sbc");
+            text.Write(header.Replace("{size}", size).Replace("{name}", Path.GetFileName(imageName)));
 
-            text.Write(header.Replace("{size}", size).Replace("{name}", imageName));
-
-            using MemoryStream outStream = new MemoryStream();
-            Dispatcher.Invoke(new Action(delegate ()
-            {
-                BmpBitmapEncoder encoder = new BmpBitmapEncoder();
-                encoder.Frames.Add(BitmapFrame.Create(image));
-                encoder.Save(outStream);
-            }));
-            Bitmap bitmap = new Bitmap(outStream);
-            bitmap.MakeTransparent();
+            BitmapHelper.PixelColor[,] color = BitmapHelper.GetPixels(bitMap);
 
             int total = 0;
-            int yLevel = bitmap.Height;
-            for (int x = 0; x < bitmap.Width; x++)
+            for (int x = 0; x < color.GetLength(0); x++)
             {
-                
-                InfoLbl.Dispatcher.Invoke((Delegate)new UpdateTextCallback(UpdateText), new object[1]
-                {
-                    "Finished " + x.ToString() + " of " + bitmap.Width.ToString()
+                InfoLbl.Dispatcher.Invoke(() => {
+                    InfoLbl.Content = "Finished " + x.ToString() + " of " + color.GetLength(0);
                 });
-                yLevel = bitmap.Height;
 
-                for (int y = 0; y < bitmap.Height; y++)
+                for (int y = 0; y < color.GetLength(1); y++)
                 {
-                    yLevel--;
-                    System.Drawing.Color c = bitmap.GetPixel(x, y);
-                    ArrayList color = ConvertRGB2SE((int)c.R, (int)c.G, (int)c.B);
+                    BitmapHelper.PixelColor c = color[x, y];
 
-                    if (c.A > 10)
+                    if (c.Alpha > 10)
                     {
+                        ArrayList colorArr = ConvertRGB2SE((int)c.Red, (int)c.Green, (int)c.Blue);
+
                         total += 1;
-                        text.Write(cube.Replace("{size}", size).Replace("{x}", x.ToString()).Replace("{y}", yLevel.ToString())
-                            .Replace("{h}", color[0].ToString())
-                            .Replace("{s}", color[1].ToString())
-                            .Replace("{v}", color[2].ToString()));
+                        text.Write(cube.Replace("{size}", size).Replace("{x}", x.ToString()).Replace("{y}", y.ToString())
+                            .Replace("{h}", colorArr[0].ToString())
+                            .Replace("{s}", colorArr[1].ToString())
+                            .Replace("{v}", colorArr[2].ToString()));
                     }
                 }
             }
-            text.Write(footer.Replace("{name}", imageName));
+            text.Write(footer.Replace("{name}", Path.GetFileName(imageName)));
             text.Close();
-            outStream.Close();
 
-
-            InfoLbl.Dispatcher.Invoke(new UpdateTextCallback(UpdateText), new object[1]
-            {
-                "Finished " + total.ToString() + " total blocks"
+            InfoLbl.Dispatcher.Invoke(() => {
+                InfoLbl.Content = "Finished " + total.ToString() + " total blocks";
             });
 
             running = false;
@@ -227,8 +217,8 @@ namespace SEImage2Blueprint
         {
             if (ScaleLbl != null)
             {
-                ScaleLbl.Content = "x" + Math.Round(ImageSize.Value + .5, 2);
-                UpdateImage();
+                ScaleLbl.Content = "x" + Math.Round(ImageSize.Value, 2);
+                UpdateImage(InputTxt.Text);
             } 
         }
 
@@ -239,13 +229,12 @@ namespace SEImage2Blueprint
                 UpdateText("Cant change image while running!");
                 return;
             }
-            imageName = ((TextBox)sender).Text;
-            UpdateImage();
+            UpdateImage(((TextBox)sender).Text);
         }
 
         private void ConvertBtn_Click(object sender, RoutedEventArgs e)
         {
-            if (image == null)
+            if (imagePath == null)
             {
                 UpdateText("Invalid image!");
                 return;
@@ -260,6 +249,32 @@ namespace SEImage2Blueprint
             thread.Priority = ThreadPriority.AboveNormal;
             thread.IsBackground = true;
             thread.Start();
+        }
+
+        private void AddFile_Click(object sender, RoutedEventArgs e)
+        {
+            OpenFileDialog openFileDialog = new OpenFileDialog
+            {
+                Title = "Browse Image Files",
+
+                CheckFileExists = true,
+                CheckPathExists = true,
+
+                DefaultExt = "png",
+                Filter = "all files (*.*)|*.*|jpg files (*.jpg)|*.jpg|png files (*.png)|*.png",
+                FilterIndex = 2,
+                RestoreDirectory = true,
+
+                ReadOnlyChecked = true,
+                ShowReadOnly = true
+            };
+
+            if (openFileDialog.ShowDialog() == true)
+            {
+                InputTxt.Text = Path.GetFileNameWithoutExtension(openFileDialog.FileName);
+                imagePath = new FileInfo(openFileDialog.FileName);
+                UpdateImage(Path.GetFileNameWithoutExtension(openFileDialog.FileName));
+            }
         }
     }
 }
